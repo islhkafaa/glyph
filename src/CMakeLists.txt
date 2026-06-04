@@ -3,6 +3,12 @@ add_library(glyph_core STATIC
     distance/avx2.cpp
     distance/neon.cpp
     distance/dispatch.cpp
+    hnsw/graph.cpp
+    metadata/filter.cpp
+    collection/collection.cpp
+    collection/registry.cpp
+    wal/log.cpp
+    persistence/engine.cpp
 )
 
 add_library(Glyph::core ALIAS glyph_core)

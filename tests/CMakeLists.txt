@@ -27,6 +27,11 @@ endforeach()
 add_executable(glyph_tests
     distance/test_scalar.cpp
     distance/test_dispatch.cpp
+    hnsw/test_graph.cpp
+    collection/test_collection.cpp
+    collection/test_registry.cpp
+    wal/test_wal.cpp
+    persistence/test_engine.cpp
 )
 
 target_link_libraries(glyph_tests PRIVATE
