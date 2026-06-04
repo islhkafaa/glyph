@@ -176,6 +176,8 @@ inline void write_config(std::ostream& out, const HnswConfig& config) {
     write_uint32(out, config.ef_construction);
     write_uint32(out, static_cast<std::uint32_t>(config.metric));
     write_uint64(out, config.max_elements);
+    write_uint32(out, static_cast<std::uint32_t>(config.quant_mode));
+    write_uint32(out, config.pq_m);
 }
 
 inline HnswConfig read_config(std::istream& in) {
@@ -186,6 +188,8 @@ inline HnswConfig read_config(std::istream& in) {
     config.ef_construction = read_uint32(in);
     config.metric = static_cast<Metric>(read_uint32(in));
     config.max_elements = read_uint64(in);
+    config.quant_mode = static_cast<QuantizationMode>(read_uint32(in));
+    config.pq_m = read_uint32(in);
     return config;
 }
 

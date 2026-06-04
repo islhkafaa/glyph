@@ -34,6 +34,8 @@ void Collection::remove(VectorId id) {
     metadata_.erase(id);
 }
 
+void Collection::train() { graph_.train_quantization(); }
+
 std::vector<Collection::SearchResult> Collection::search(std::span<const float> query,
                                                          std::uint32_t k, std::uint32_t ef,
                                                          const Filter& filter) const {

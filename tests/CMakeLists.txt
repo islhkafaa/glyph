@@ -28,12 +28,16 @@ add_executable(glyph_tests
     distance/test_scalar.cpp
     distance/test_dispatch.cpp
     hnsw/test_graph.cpp
+    hnsw/test_graph_quantized.cpp
+    quantization/test_sq8.cpp
+    quantization/test_pq.cpp
     collection/test_collection.cpp
     collection/test_registry.cpp
     wal/test_wal.cpp
     persistence/test_engine.cpp
     server/test_grpc.cpp
     server/test_http.cpp
+    server/test_metrics.cpp
 )
 
 target_link_libraries(glyph_tests PRIVATE

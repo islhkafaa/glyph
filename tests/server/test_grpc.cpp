@@ -287,3 +287,82 @@ TEST_F(GrpcServerTest, FilteredSearchViaGrpc) {
     ASSERT_EQ(search_resp.hits_size(), 1);
     EXPECT_EQ(search_resp.hits(0).id(), 101);
 }
+
+TEST_F(GrpcServerTest, IntrospectionAndStats) {
+    {
+        grpc::ClientContext context;
+        glyph::Empty req;
+        glyph::HealthResponse resp;
+        grpc::Status status = stub->Health(&context, req, &resp);
+        ASSERT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.status(), "ok");
+        EXPECT_GE(resp.uptime_s(), 0);
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::Empty req;
+        glyph::ListNamespacesResponse resp;
+        grpc::Status status = stub->ListNamespaces(&context, req, &resp);
+        ASSERT_TRUE(status.ok());
+        EXPECT_EQ(resp.names_size(), 0);
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::CreateNamespaceRequest create_req;
+        create_req.set_name("grpc_test_ns");
+        auto* config = create_req.mutable_config();
+        config->set_dim(4);
+        config->set_m(8);
+        config->set_m0(16);
+        config->set_ef_construction(100);
+        config->set_metric("l2");
+        config->set_max_elements(1000);
+        glyph::Empty empty_resp;
+        grpc::Status status = stub->CreateNamespace(&context, create_req, &empty_resp);
+        ASSERT_TRUE(status.ok());
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::Empty req;
+        glyph::ListNamespacesResponse resp;
+        grpc::Status status = stub->ListNamespaces(&context, req, &resp);
+        ASSERT_TRUE(status.ok());
+        ASSERT_EQ(resp.names_size(), 1);
+        EXPECT_EQ(resp.names(0), "grpc_test_ns");
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::GetNamespaceRequest req;
+        req.set_name("grpc_test_ns");
+        glyph::NamespaceInfoProto resp;
+        grpc::Status status = stub->GetNamespace(&context, req, &resp);
+        ASSERT_TRUE(status.ok());
+        EXPECT_EQ(resp.size(), 0);
+        EXPECT_EQ(resp.config().dim(), 4);
+        EXPECT_EQ(resp.config().metric(), "L2");
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::GetNamespaceRequest req;
+        req.set_name("missing_ns");
+        glyph::NamespaceInfoProto resp;
+        grpc::Status status = stub->GetNamespace(&context, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::NOT_FOUND);
+    }
+
+    {
+        grpc::ClientContext context;
+        glyph::Empty req;
+        glyph::StatsResponse resp;
+        grpc::Status status = stub->Stats(&context, req, &resp);
+        ASSERT_TRUE(status.ok());
+        EXPECT_EQ(resp.namespace_count(), 1);
+        EXPECT_EQ(resp.total_vectors(), 0);
+        EXPECT_GE(resp.errors(), 1);
+    }
+}

@@ -3,13 +3,13 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
 #include <thread>
 
 #include "persistence/engine.hpp"
 #include "server/grpc_service.hpp"
 #include "server/handler.hpp"
 #include "server/http_service.hpp"
+#include "server/logger.hpp"
 
 namespace {
 std::atomic<bool> keep_running{true};
@@ -35,6 +35,9 @@ int main(int argc, char* argv[]) {
     }
 
     try {
+        log_info("Starting Glyph server",
+                 {{"data_dir", data_dir.string()}, {"grpc_port", "50051"}, {"http_port", "8080"}});
+
         StorageEngine engine(data_dir);
         CommandHandler handler(engine);
 
@@ -55,8 +58,9 @@ int main(int argc, char* argv[]) {
         if (grpc_server) {
             grpc_server->Shutdown();
         }
+        log_info("Shutdown complete");
     } catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << std::endl;
+        log_error("Fatal error", {{"error", e.what()}});
         return 1;
     }
 

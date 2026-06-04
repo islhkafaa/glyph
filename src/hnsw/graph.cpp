@@ -20,12 +20,42 @@ HnswGraph::HnswGraph(HnswGraph&& other) noexcept
       id_to_node_(std::move(other.id_to_node_)),
       node_to_id_(std::move(other.node_to_id_)),
       vectors_(std::move(other.vectors_)),
+      quant_codes_(std::move(other.quant_codes_)),
+      quant_trained_(other.quant_trained_),
+      sq8_codebook_(std::move(other.sq8_codebook_)),
+      pq_codebook_(std::move(other.pq_codebook_)),
       node_level_(std::move(other.node_level_)),
       layers_(std::move(other.layers_)),
       deleted_nodes_(std::move(other.deleted_nodes_)),
       entry_point_(other.entry_point_),
       max_level_(other.max_level_),
       rng_(std::move(other.rng_)) {}
+
+void HnswGraph::train_quantization() {
+    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    if (quant_trained_ || config_.quant_mode == QuantizationMode::None) {
+        return;
+    }
+
+    if (config_.quant_mode == QuantizationMode::SQ8) {
+        sq8_codebook_ = Sq8Codebook();
+        sq8_codebook_->train(vectors_);
+        quant_codes_.resize(vectors_.size());
+        for (std::size_t i = 0; i < vectors_.size(); ++i) {
+            quant_codes_[i] = sq8_codebook_->encode(vectors_[i]);
+        }
+    } else if (config_.quant_mode == QuantizationMode::PQ) {
+        pq_codebook_ = PqCodebook();
+        pq_codebook_->train(vectors_, config_.pq_m);
+        quant_codes_.resize(vectors_.size());
+        for (std::size_t i = 0; i < vectors_.size(); ++i) {
+            quant_codes_[i] = pq_codebook_->encode(vectors_[i]);
+        }
+    }
+
+    vectors_.clear();
+    quant_trained_ = true;
+}
 
 void HnswGraph::upsert(VectorId id, std::span<const float> vec) {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
@@ -38,6 +68,7 @@ void HnswGraph::upsert(VectorId id, std::span<const float> vec) {
             max_level_ = -1;
             entry_point_ = 0;
             vectors_.clear();
+            quant_codes_.clear();
             node_to_id_.clear();
             node_level_.clear();
             layers_.clear();
@@ -45,8 +76,18 @@ void HnswGraph::upsert(VectorId id, std::span<const float> vec) {
         }
     }
 
-    std::uint32_t node_idx = static_cast<std::uint32_t>(vectors_.size());
-    vectors_.push_back(std::vector<float>(vec.begin(), vec.end()));
+    std::uint32_t node_idx = 0;
+    if (quant_trained_) {
+        node_idx = static_cast<std::uint32_t>(quant_codes_.size());
+        if (config_.quant_mode == QuantizationMode::SQ8) {
+            quant_codes_.push_back(sq8_codebook_->encode(vec));
+        } else if (config_.quant_mode == QuantizationMode::PQ) {
+            quant_codes_.push_back(pq_codebook_->encode(vec));
+        }
+    } else {
+        node_idx = static_cast<std::uint32_t>(vectors_.size());
+        vectors_.push_back(std::vector<float>(vec.begin(), vec.end()));
+    }
     node_to_id_.push_back(id);
     id_to_node_[id] = node_idx;
 
@@ -97,9 +138,29 @@ void HnswGraph::upsert(VectorId id, std::span<const float> vec) {
             if (n_neighbors.size() > n_M_max) {
                 std::vector<std::pair<float, std::uint32_t>> n_candidates;
                 n_candidates.reserve(n_neighbors.size());
-                std::span<const float> n_vec = vectors_[neighbor];
+                std::vector<float> n_vec;
+                if (quant_trained_) {
+                    if (config_.quant_mode == QuantizationMode::SQ8) {
+                        n_vec = sq8_codebook_->decode(quant_codes_[neighbor]);
+                    } else {
+                        n_vec = pq_codebook_->decode(quant_codes_[neighbor]);
+                    }
+                } else {
+                    n_vec = vectors_[neighbor];
+                }
                 for (std::uint32_t nn : n_neighbors) {
-                    float dist = kernel_(n_vec, vectors_[nn]);
+                    float dist = 0.0f;
+                    if (quant_trained_) {
+                        if (config_.quant_mode == QuantizationMode::SQ8) {
+                            dist = sq8_codebook_->distance(n_vec, quant_codes_[nn], kernel_);
+                        } else {
+                            PqLookup lookup = pq_codebook_->build_lookup(n_vec, config_.metric);
+                            dist = pq_codebook_->adc_distance(lookup, quant_codes_[nn], kernel_,
+                                                              n_vec);
+                        }
+                    } else {
+                        dist = kernel_(n_vec, vectors_[nn]);
+                    }
                     n_candidates.push_back({dist, nn});
                 }
                 std::sort(n_candidates.begin(), n_candidates.end());
@@ -131,6 +192,7 @@ void HnswGraph::remove(VectorId id) {
             max_level_ = -1;
             entry_point_ = 0;
             vectors_.clear();
+            quant_codes_.clear();
             node_to_id_.clear();
             node_level_.clear();
             layers_.clear();
@@ -183,13 +245,36 @@ int HnswGraph::generate_random_level() {
 std::uint32_t HnswGraph::search_layer(std::span<const float> query, std::uint32_t enter_node,
                                       int level) const {
     std::uint32_t curr_node = enter_node;
-    float curr_dist = kernel_(query, vectors_[curr_node]);
+    float curr_dist = 0.0f;
+    PqLookup pq_lookup;
+    if (quant_trained_) {
+        if (config_.quant_mode == QuantizationMode::SQ8) {
+            curr_dist = sq8_codebook_->distance(query, quant_codes_[curr_node], kernel_);
+        } else if (config_.quant_mode == QuantizationMode::PQ) {
+            pq_lookup = pq_codebook_->build_lookup(query, config_.metric);
+            curr_dist =
+                pq_codebook_->adc_distance(pq_lookup, quant_codes_[curr_node], kernel_, query);
+        }
+    } else {
+        curr_dist = kernel_(query, vectors_[curr_node]);
+    }
+
     bool changed = true;
     while (changed) {
         changed = false;
         const auto& neighbors = layers_[level].adj[curr_node];
         for (std::uint32_t neighbor : neighbors) {
-            float dist = kernel_(query, vectors_[neighbor]);
+            float dist = 0.0f;
+            if (quant_trained_) {
+                if (config_.quant_mode == QuantizationMode::SQ8) {
+                    dist = sq8_codebook_->distance(query, quant_codes_[neighbor], kernel_);
+                } else if (config_.quant_mode == QuantizationMode::PQ) {
+                    dist = pq_codebook_->adc_distance(pq_lookup, quant_codes_[neighbor], kernel_,
+                                                      query);
+                }
+            } else {
+                dist = kernel_(query, vectors_[neighbor]);
+            }
             if (dist < curr_dist) {
                 curr_dist = dist;
                 curr_node = neighbor;
@@ -220,8 +305,23 @@ std::vector<std::pair<float, std::uint32_t>> HnswGraph::search_layer_ef(
     std::vector<std::pair<float, std::uint32_t>> candidates;
     std::vector<std::pair<float, std::uint32_t>> nearest;
 
+    PqLookup pq_lookup;
+    if (quant_trained_ && config_.quant_mode == QuantizationMode::PQ) {
+        pq_lookup = pq_codebook_->build_lookup(query, config_.metric);
+    }
+
     for (std::uint32_t enter_node : enter_nodes) {
-        float dist = kernel_(query, vectors_[enter_node]);
+        float dist = 0.0f;
+        if (quant_trained_) {
+            if (config_.quant_mode == QuantizationMode::SQ8) {
+                dist = sq8_codebook_->distance(query, quant_codes_[enter_node], kernel_);
+            } else if (config_.quant_mode == QuantizationMode::PQ) {
+                dist =
+                    pq_codebook_->adc_distance(pq_lookup, quant_codes_[enter_node], kernel_, query);
+            }
+        } else {
+            dist = kernel_(query, vectors_[enter_node]);
+        }
         candidates.push_back({dist, enter_node});
         if (!deleted_nodes_.contains(enter_node)) {
             nearest.push_back({dist, enter_node});
@@ -245,7 +345,18 @@ std::vector<std::pair<float, std::uint32_t>> HnswGraph::search_layer_ef(
         const auto& neighbors = layers_[level].adj[curr.second];
         for (std::uint32_t neighbor : neighbors) {
             if (visited.insert(neighbor).second) {
-                float dist = kernel_(query, vectors_[neighbor]);
+                float dist = 0.0f;
+                if (quant_trained_) {
+                    if (config_.quant_mode == QuantizationMode::SQ8) {
+                        dist = sq8_codebook_->distance(query, quant_codes_[neighbor], kernel_);
+                    } else if (config_.quant_mode == QuantizationMode::PQ) {
+                        dist = pq_codebook_->adc_distance(pq_lookup, quant_codes_[neighbor],
+                                                          kernel_, query);
+                    }
+                } else {
+                    dist = kernel_(query, vectors_[neighbor]);
+                }
+
                 float f_dist =
                     nearest.empty() ? std::numeric_limits<float>::max() : nearest.front().first;
                 if (dist < f_dist || nearest.size() < ef) {
@@ -284,24 +395,43 @@ std::vector<std::uint32_t> HnswGraph::select_neighbors(
 void HnswGraph::serialize(std::ostream& out) const {
     std::shared_lock<std::shared_mutex> lock(rw_mutex_);
     wal::write_config(out, config_);
+
+    wal::write_bool(out, quant_trained_);
+    if (quant_trained_) {
+        if (config_.quant_mode == QuantizationMode::SQ8) {
+            sq8_codebook_->serialize(out);
+        } else if (config_.quant_mode == QuantizationMode::PQ) {
+            pq_codebook_->serialize(out);
+        }
+    }
+
     std::uint32_t active_count = 0;
-    std::vector<std::uint32_t> compact_map(vectors_.size(), 0xFFFFFFFF);
-    for (std::uint32_t i = 0; i < vectors_.size(); ++i) {
+    std::size_t total_nodes = quant_trained_ ? quant_codes_.size() : vectors_.size();
+    std::vector<std::uint32_t> compact_map(total_nodes, 0xFFFFFFFF);
+    for (std::uint32_t i = 0; i < total_nodes; ++i) {
         if (!deleted_nodes_.contains(i)) {
             compact_map[i] = active_count++;
         }
     }
     wal::write_uint32(out, active_count);
-    for (std::uint32_t i = 0; i < vectors_.size(); ++i) {
+    for (std::uint32_t i = 0; i < total_nodes; ++i) {
         if (!deleted_nodes_.contains(i)) {
             wal::write_uint64(out, node_to_id_[i]);
-            wal::write_uint32(out, static_cast<std::uint32_t>(vectors_[i].size()));
-            for (float f : vectors_[i]) {
-                wal::write_float(out, f);
+            if (quant_trained_) {
+                wal::write_uint32(out, static_cast<std::uint32_t>(quant_codes_[i].size()));
+                for (std::uint8_t b : quant_codes_[i]) {
+                    out.put(static_cast<char>(b));
+                }
+            } else {
+                wal::write_uint32(out, static_cast<std::uint32_t>(vectors_[i].size()));
+                for (float f : vectors_[i]) {
+                    wal::write_float(out, f);
+                }
             }
             wal::write_uint32(out, static_cast<std::uint32_t>(node_level_[i]));
         }
     }
+
     std::uint32_t new_entry_point = 0;
     int new_max_level = -1;
     if (active_count > 0) {
@@ -311,7 +441,7 @@ void HnswGraph::serialize(std::ostream& out) const {
         } else {
             int max_l = -1;
             std::uint32_t best_node = 0;
-            for (std::uint32_t i = 0; i < vectors_.size(); ++i) {
+            for (std::uint32_t i = 0; i < total_nodes; ++i) {
                 if (!deleted_nodes_.contains(i)) {
                     if (node_level_[i] > max_l) {
                         max_l = node_level_[i];
@@ -328,7 +458,7 @@ void HnswGraph::serialize(std::ostream& out) const {
     wal::write_uint32(out, static_cast<std::uint32_t>(new_max_level));
     wal::write_uint32(out, new_entry_point);
     for (int l = 0; l <= new_max_level; ++l) {
-        for (std::uint32_t i = 0; i < vectors_.size(); ++i) {
+        for (std::uint32_t i = 0; i < total_nodes; ++i) {
             if (!deleted_nodes_.contains(i)) {
                 std::vector<std::uint32_t> active_neighbors;
                 if (l < static_cast<int>(layers_.size()) && i < layers_[l].adj.size()) {
@@ -350,21 +480,44 @@ void HnswGraph::serialize(std::ostream& out) const {
 HnswGraph HnswGraph::deserialize(std::istream& in) {
     HnswConfig config = wal::read_config(in);
     HnswGraph graph(config);
+
+    graph.quant_trained_ = wal::read_bool(in);
+    if (graph.quant_trained_) {
+        if (config.quant_mode == QuantizationMode::SQ8) {
+            graph.sq8_codebook_ = Sq8Codebook::deserialize(in);
+        } else if (config.quant_mode == QuantizationMode::PQ) {
+            graph.pq_codebook_ = PqCodebook::deserialize(in);
+        }
+    }
+
     std::uint32_t active_count = wal::read_uint32(in);
-    graph.vectors_.resize(active_count);
+    if (graph.quant_trained_) {
+        graph.quant_codes_.resize(active_count);
+    } else {
+        graph.vectors_.resize(active_count);
+    }
     graph.node_to_id_.resize(active_count);
     graph.id_to_node_.reserve(active_count);
     graph.node_level_.resize(active_count);
+
     for (std::uint32_t i = 0; i < active_count; ++i) {
         graph.node_to_id_[i] = wal::read_uint64(in);
-        std::uint32_t dim = wal::read_uint32(in);
-        graph.vectors_[i].resize(dim);
-        for (std::uint32_t d = 0; d < dim; ++d) {
-            graph.vectors_[i][d] = wal::read_float(in);
+        std::uint32_t len = wal::read_uint32(in);
+        if (graph.quant_trained_) {
+            graph.quant_codes_[i].resize(len);
+            for (std::uint32_t d = 0; d < len; ++d) {
+                graph.quant_codes_[i][d] = static_cast<std::uint8_t>(in.get());
+            }
+        } else {
+            graph.vectors_[i].resize(len);
+            for (std::uint32_t d = 0; d < len; ++d) {
+                graph.vectors_[i][d] = wal::read_float(in);
+            }
         }
         graph.node_level_[i] = static_cast<int>(wal::read_uint32(in));
         graph.id_to_node_[graph.node_to_id_[i]] = i;
     }
+
     graph.max_level_ = static_cast<int>(wal::read_uint32(in));
     graph.entry_point_ = wal::read_uint32(in);
     if (graph.max_level_ >= 0) {

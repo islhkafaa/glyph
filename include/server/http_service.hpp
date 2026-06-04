@@ -3,6 +3,7 @@
 #define HTTPLIB_HEADER_ONLY
 #include <httplib.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <thread>
@@ -23,6 +24,7 @@ class HttpService {
     int port_;
     httplib::Server svr_;
     std::unique_ptr<std::thread> thread_;
+    std::chrono::steady_clock::time_point start_time_;
 
     void setup_routes();
 };

@@ -14,3 +14,4 @@ include(cmake/Dependencies.cmake)
 
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(bench)

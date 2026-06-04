@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <shared_mutex>
 #include <span>
@@ -11,6 +12,8 @@
 #include "distance/kernel.hpp"
 #include "hnsw/config.hpp"
 #include "hnsw/layer.hpp"
+#include "quantization/pq.hpp"
+#include "quantization/sq8.hpp"
 #include "types.hpp"
 
 class HnswGraph {
@@ -32,6 +35,9 @@ class HnswGraph {
     std::uint64_t size() const;
     const HnswConfig& config() const;
 
+    void train_quantization();
+    bool quant_trained() const { return quant_trained_; }
+
     void serialize(std::ostream& out) const;
     static HnswGraph deserialize(std::istream& in);
 
@@ -44,6 +50,10 @@ class HnswGraph {
     std::unordered_map<VectorId, std::uint32_t> id_to_node_;
     std::vector<VectorId> node_to_id_;
     std::vector<std::vector<float>> vectors_;
+    std::vector<std::vector<std::uint8_t>> quant_codes_;
+    bool quant_trained_ = false;
+    std::optional<Sq8Codebook> sq8_codebook_;
+    std::optional<PqCodebook> pq_codebook_;
     std::vector<int> node_level_;
     std::vector<Layer> layers_;
     std::unordered_set<std::uint32_t> deleted_nodes_;

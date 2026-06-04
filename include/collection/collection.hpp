@@ -30,6 +30,7 @@ class Collection {
     void upsert(VectorId id, std::span<const float> vec, Metadata meta);
     void batch_upsert(std::vector<UpsertEntry> entries);
     void remove(VectorId id);
+    void train();
 
     std::vector<SearchResult> search(std::span<const float> query, std::uint32_t k,
                                      std::uint32_t ef, const Filter& filter = {}) const;

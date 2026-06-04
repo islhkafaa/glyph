@@ -3,6 +3,9 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
+#include "server/logger.hpp"
+#include "server/metrics.hpp"
+
 using json = nlohmann::json;
 
 namespace {
@@ -15,6 +18,22 @@ Metric parse_metric(const std::string& name) {
     if (name == "l1" || name == "L1") return Metric::L1;
     if (name == "hamming" || name == "Hamming") return Metric::Hamming;
     throw std::invalid_argument("Unknown metric: " + name);
+}
+
+std::string metric_to_string(Metric metric) {
+    switch (metric) {
+        case Metric::Cosine:
+            return "Cosine";
+        case Metric::L2:
+            return "L2";
+        case Metric::DotProduct:
+            return "DotProduct";
+        case Metric::L1:
+            return "L1";
+        case Metric::Hamming:
+            return "Hamming";
+    }
+    return "Unknown";
 }
 
 MetadataValue json_to_value(const json& j) {
@@ -46,6 +65,8 @@ Filter json_to_filter(const json& j) {
 }
 
 void send_error(httplib::Response& res, int status, const std::string& msg) {
+    Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);
+    log_error(msg, {{"status", std::to_string(status)}});
     json err;
     err["error"] = msg;
     res.status = status;
@@ -55,7 +76,7 @@ void send_error(httplib::Response& res, int status, const std::string& msg) {
 }  // namespace
 
 HttpService::HttpService(CommandHandler& handler, const std::string& host, int port)
-    : handler_(handler), host_(host), port_(port) {
+    : handler_(handler), host_(host), port_(port), start_time_(std::chrono::steady_clock::now()) {
     setup_routes();
 }
 
@@ -74,6 +95,91 @@ void HttpService::stop() {
 }
 
 void HttpService::setup_routes() {
+    svr_.Get("/health", [this](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        try {
+            auto uptime = std::chrono::steady_clock::now() - start_time_;
+            auto secs = std::chrono::duration_cast<std::chrono::seconds>(uptime).count();
+            json j;
+            j["status"] = "ok";
+            j["uptime_s"] = static_cast<std::uint64_t>(secs);
+            res.status = 200;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            send_error(res, 500, e.what());
+        }
+    });
+
+    svr_.Get("/stats", [this](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        try {
+            auto snap = Metrics::instance().snapshot();
+            auto names = handler_.list_namespaces();
+            std::uint64_t total_vectors = 0;
+            for (const auto& ns : names) {
+                try {
+                    total_vectors += handler_.get_namespace(ns).size;
+                } catch (...) {
+                }
+            }
+            json j;
+            j["namespace_count"] = names.size();
+            j["total_vectors"] = total_vectors;
+            j["upserts"] = snap.upserts;
+            j["searches"] = snap.searches;
+            j["deletes"] = snap.deletes;
+            j["errors"] = snap.errors;
+            res.status = 200;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            send_error(res, 500, e.what());
+        }
+    });
+
+    svr_.Get("/namespaces", [this](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        try {
+            auto list = handler_.list_namespaces();
+            json j = list;
+            res.status = 200;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            send_error(res, 500, e.what());
+        }
+    });
+
+    svr_.Get(R"(/namespaces/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            std::string name = req.matches[1];
+            auto info = handler_.get_namespace(name);
+            std::string qmode = "None";
+            if (info.config.quant_mode == QuantizationMode::SQ8) {
+                qmode = "SQ8";
+            } else if (info.config.quant_mode == QuantizationMode::PQ) {
+                qmode = "PQ";
+            }
+
+            json j;
+            j["size"] = info.size;
+            j["config"] = {{"dim", info.config.dim},
+                           {"m", info.config.M},
+                           {"m0", info.config.M0},
+                           {"ef_construction", info.config.ef_construction},
+                           {"metric", metric_to_string(info.config.metric)},
+                           {"max_elements", info.config.max_elements},
+                           {"quant_mode", qmode},
+                           {"pq_m", info.config.pq_m}};
+            res.status = 200;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::out_of_range& e) {
+            send_error(res, 404, e.what());
+        } catch (const std::invalid_argument& e) {
+            send_error(res, 400, e.what());
+        } catch (const std::exception& e) {
+            send_error(res, 500, e.what());
+        }
+    });
+
     svr_.Post("/namespaces", [this](const httplib::Request& req, httplib::Response& res) {
         try {
             auto j = json::parse(req.body);
@@ -86,6 +192,22 @@ void HttpService::setup_routes() {
             config.ef_construction = config_json.at("ef_construction").get<uint32_t>();
             config.metric = parse_metric(config_json.at("metric").get<std::string>());
             config.max_elements = config_json.at("max_elements").get<uint32_t>();
+
+            if (config_json.contains("quant_mode")) {
+                std::string mode = config_json.at("quant_mode").get<std::string>();
+                if (mode == "none" || mode == "None") {
+                    config.quant_mode = QuantizationMode::None;
+                } else if (mode == "sq8" || mode == "SQ8") {
+                    config.quant_mode = QuantizationMode::SQ8;
+                } else if (mode == "pq" || mode == "PQ") {
+                    config.quant_mode = QuantizationMode::PQ;
+                } else {
+                    throw std::invalid_argument("Unknown quantization mode: " + mode);
+                }
+            }
+            if (config_json.contains("pq_m")) {
+                config.pq_m = config_json.at("pq_m").get<uint32_t>();
+            }
 
             handler_.create_namespace(name, config);
             res.status = 200;
@@ -189,6 +311,22 @@ void HttpService::setup_routes() {
                         send_error(res, 500, e.what());
                     }
                 });
+
+    svr_.Post(R"(/namespaces/([^/]+)/train)",
+              [this](const httplib::Request& req, httplib::Response& res) {
+                  try {
+                      std::string ns = req.matches[1];
+                      handler_.train(ns);
+                      res.status = 200;
+                      res.set_content("{}", "application/json");
+                  } catch (const std::out_of_range& e) {
+                      send_error(res, 404, e.what());
+                  } catch (const std::invalid_argument& e) {
+                      send_error(res, 400, e.what());
+                  } catch (const std::exception& e) {
+                      send_error(res, 500, e.what());
+                  }
+              });
 
     svr_.Post(R"(/namespaces/([^/]+)/search)",
               [this](const httplib::Request& req, httplib::Response& res) {

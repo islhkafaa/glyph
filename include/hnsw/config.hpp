@@ -5,6 +5,8 @@
 #include "distance/metric.hpp"
 #include "types.hpp"
 
+enum class QuantizationMode : std::uint32_t { None = 0, SQ8 = 1, PQ = 2 };
+
 struct HnswConfig {
     Dimension dim;
     std::uint32_t M = 16;
@@ -12,4 +14,6 @@ struct HnswConfig {
     std::uint32_t ef_construction = 200;
     Metric metric = Metric::L2;
     std::uint64_t max_elements = 0;
+    QuantizationMode quant_mode = QuantizationMode::None;
+    std::uint32_t pq_m = 8;
 };

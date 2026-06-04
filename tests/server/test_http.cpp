@@ -195,3 +195,58 @@ TEST_F(HttpServerTest, FilteredSearchViaHttp) {
     ASSERT_EQ(resp_json.size(), 1);
     EXPECT_EQ(resp_json[0]["id"].get<uint64_t>(), 101);
 }
+
+TEST_F(HttpServerTest, IntrospectionAndStats) {
+    auto res = client->Get("/health");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+    auto health_json = json::parse(res->body);
+    EXPECT_EQ(health_json["status"].get<std::string>(), "ok");
+    EXPECT_GE(health_json["uptime_s"].get<uint64_t>(), 0);
+
+    res = client->Get("/namespaces");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+    auto list_json = json::parse(res->body);
+    EXPECT_TRUE(list_json.is_array());
+    EXPECT_EQ(list_json.size(), 0);
+
+    json create_body = {{"name", "test_ns"},
+                        {"config",
+                         {{"dim", 4},
+                          {"m", 8},
+                          {"m0", 16},
+                          {"ef_construction", 100},
+                          {"metric", "l2"},
+                          {"max_elements", 1000}}}};
+    res = client->Post("/namespaces", create_body.dump(), "application/json");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+
+    res = client->Get("/namespaces");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+    list_json = json::parse(res->body);
+    EXPECT_EQ(list_json.size(), 1);
+    EXPECT_EQ(list_json[0].get<std::string>(), "test_ns");
+
+    res = client->Get("/namespaces/test_ns");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+    auto info_json = json::parse(res->body);
+    EXPECT_EQ(info_json["size"].get<uint64_t>(), 0);
+    EXPECT_EQ(info_json["config"]["dim"].get<uint32_t>(), 4);
+    EXPECT_EQ(info_json["config"]["metric"].get<std::string>(), "L2");
+
+    res = client->Get("/namespaces/missing_ns");
+    ASSERT_NE(res, nullptr);
+    EXPECT_EQ(res->status, 404);
+
+    res = client->Get("/stats");
+    ASSERT_NE(res, nullptr);
+    ASSERT_EQ(res->status, 200);
+    auto stats_json = json::parse(res->body);
+    EXPECT_EQ(stats_json["namespace_count"].get<uint64_t>(), 1);
+    EXPECT_EQ(stats_json["total_vectors"].get<uint64_t>(), 0);
+    EXPECT_GE(stats_json["errors"].get<uint64_t>(), 1);
+}

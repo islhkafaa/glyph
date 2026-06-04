@@ -4,6 +4,8 @@ add_library(glyph_core STATIC
     distance/neon.cpp
     distance/dispatch.cpp
     hnsw/graph.cpp
+    quantization/sq8.cpp
+    quantization/pq.cpp
     metadata/filter.cpp
     collection/collection.cpp
     collection/registry.cpp
@@ -56,6 +58,7 @@ add_library(glyph_server_lib STATIC
     server/handler.cpp
     server/grpc_service.cpp
     server/http_service.cpp
+    server/logger.cpp
     ${GEN_SOURCES}
 )
 
@@ -80,3 +83,15 @@ add_executable(glyph_server
 target_link_libraries(glyph_server PRIVATE
     glyph_server_lib
 )
+
+if(WIN32 AND NOT MSVC)
+    get_filename_component(COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    add_custom_command(TARGET glyph_server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${COMPILER_DIR}/libstdc++-6.dll"
+            "${COMPILER_DIR}/libgcc_s_seh-1.dll"
+            "${COMPILER_DIR}/libwinpthread-1.dll"
+            "$<TARGET_FILE_DIR:glyph_server>"
+        COMMENT "Copying runtime DLLs for server execution"
+    )
+endif()
