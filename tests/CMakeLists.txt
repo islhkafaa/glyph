@@ -32,10 +32,13 @@ add_executable(glyph_tests
     collection/test_registry.cpp
     wal/test_wal.cpp
     persistence/test_engine.cpp
+    server/test_grpc.cpp
+    server/test_http.cpp
 )
 
 target_link_libraries(glyph_tests PRIVATE
     Glyph::core
+    glyph_server_lib
     Glyph::compiler_flags
     gtest_main
 )
