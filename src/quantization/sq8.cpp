@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 
+#include "distance/dispatch.hpp"
 #include "wal/record.hpp"
 
 void Sq8Codebook::train(std::span<const std::vector<float>> vectors) {
@@ -54,9 +55,9 @@ std::vector<float> Sq8Codebook::decode(std::span<const uint8_t> code) const {
 }
 
 float Sq8Codebook::distance(std::span<const float> query, std::span<const uint8_t> code,
-                            KernelFn kernel) const {
-    std::vector<float> decoded = decode(code);
-    return kernel(query, decoded);
+                            Metric metric) const {
+    Sq8KernelFn kernel = get_sq8_kernel(metric);
+    return kernel(query, code, min_vals, scales);
 }
 
 void Sq8Codebook::serialize(std::ostream& out) const {

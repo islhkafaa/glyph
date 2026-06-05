@@ -8,6 +8,7 @@ add_library(glyph_core STATIC
     quantization/pq.cpp
     metadata/filter.cpp
     collection/collection.cpp
+    collection/segment.cpp
     collection/registry.cpp
     wal/log.cpp
     persistence/engine.cpp

@@ -16,4 +16,5 @@ struct HnswConfig {
     std::uint64_t max_elements = 0;
     QuantizationMode quant_mode = QuantizationMode::None;
     std::uint32_t pq_m = 8;
+    std::uint32_t segment_max_size = 10000;
 };

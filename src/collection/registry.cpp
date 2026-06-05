@@ -14,6 +14,11 @@ void NamespaceRegistry::create(std::string_view name, HnswConfig config) {
     namespaces_[name_str] = std::make_unique<Collection>(config);
 }
 
+void NamespaceRegistry::register_collection(std::string_view name, Collection col) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    namespaces_[std::string(name)] = std::make_unique<Collection>(std::move(col));
+}
+
 void NamespaceRegistry::drop(std::string_view name) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     namespaces_.erase(std::string(name));

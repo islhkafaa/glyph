@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 
+#include "distance/dispatch.hpp"
 #include "wal/record.hpp"
 
 static std::vector<std::uint32_t> get_sub_dims(Dimension dim, std::uint32_t M_pq) {
@@ -131,6 +132,9 @@ PqLookup PqCodebook::build_lookup(std::span<const float> query, Metric metric) c
     lookup.metric = metric;
     lookup.table.resize(M_pq, std::vector<float>(ksub, 0.0f));
 
+    KernelFn dot_kernel = get_kernel(Metric::DotProduct);
+    KernelFn l2_sq_kernel = get_dispatch_table().l2_sq;
+
     if (metric == Metric::Cosine) {
         float query_norm_sq = 0.0f;
         for (float f : query) {
@@ -141,15 +145,10 @@ PqLookup PqCodebook::build_lookup(std::span<const float> query, Metric metric) c
 
         for (std::uint32_t s = 0; s < M_pq; ++s) {
             std::uint32_t sub_dim = dims[s];
+            std::span<const float> q_sub = query.subspan(offsets[s], sub_dim);
             for (std::uint32_t c = 0; c < ksub; ++c) {
-                float dot = 0.0f;
-                float norm_sq = 0.0f;
-                for (std::uint32_t d = 0; d < sub_dim; ++d) {
-                    float q_val = query[offsets[s] + d];
-                    float c_val = centroids[s][c][d];
-                    dot += q_val * c_val;
-                    norm_sq += c_val * c_val;
-                }
+                float dot = -dot_kernel(q_sub, centroids[s][c]);
+                float norm_sq = -dot_kernel(centroids[s][c], centroids[s][c]);
                 lookup.table[s][c] = dot;
                 lookup.centroid_norms_sq[s][c] = norm_sq;
             }
@@ -157,24 +156,17 @@ PqLookup PqCodebook::build_lookup(std::span<const float> query, Metric metric) c
     } else if (metric == Metric::DotProduct) {
         for (std::uint32_t s = 0; s < M_pq; ++s) {
             std::uint32_t sub_dim = dims[s];
+            std::span<const float> q_sub = query.subspan(offsets[s], sub_dim);
             for (std::uint32_t c = 0; c < ksub; ++c) {
-                float dot = 0.0f;
-                for (std::uint32_t d = 0; d < sub_dim; ++d) {
-                    dot += query[offsets[s] + d] * centroids[s][c][d];
-                }
-                lookup.table[s][c] = dot;
+                lookup.table[s][c] = -dot_kernel(q_sub, centroids[s][c]);
             }
         }
     } else if (metric == Metric::L2) {
         for (std::uint32_t s = 0; s < M_pq; ++s) {
             std::uint32_t sub_dim = dims[s];
+            std::span<const float> q_sub = query.subspan(offsets[s], sub_dim);
             for (std::uint32_t c = 0; c < ksub; ++c) {
-                float dist_sq = 0.0f;
-                for (std::uint32_t d = 0; d < sub_dim; ++d) {
-                    float diff = query[offsets[s] + d] - centroids[s][c][d];
-                    dist_sq += diff * diff;
-                }
-                lookup.table[s][c] = dist_sq;
+                lookup.table[s][c] = l2_sq_kernel(q_sub, centroids[s][c]);
             }
         }
     }

@@ -23,6 +23,12 @@ class HnswGraph {
         float distance;
     };
 
+    struct VectorData {
+        VectorId id;
+        std::vector<float> vec;
+    };
+    std::vector<VectorData> get_all_vectors() const;
+
     explicit HnswGraph(HnswConfig config);
     HnswGraph(HnswGraph&& other) noexcept;
 

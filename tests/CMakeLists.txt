@@ -37,6 +37,7 @@ add_executable(glyph_tests
     wal/test_wal.cpp
     persistence/test_engine.cpp
     persistence/test_compaction.cpp
+    persistence/test_segmented_storage.cpp
     server/test_grpc.cpp
     server/test_http.cpp
     server/test_metrics.cpp

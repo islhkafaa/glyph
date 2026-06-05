@@ -1,11 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <iosfwd>
+#include <memory>
 #include <shared_mutex>
 #include <span>
 #include <vector>
 
-#include "hnsw/graph.hpp"
+#include "collection/segment.hpp"
+#include "hnsw/config.hpp"
 #include "metadata/filter.hpp"
 #include "metadata/value.hpp"
 
@@ -26,6 +29,8 @@ class Collection {
     explicit Collection(HnswConfig config);
     Collection(Collection&& other) noexcept;
     Collection(HnswGraph&& graph, std::unordered_map<VectorId, Metadata>&& metadata);
+    Collection(HnswConfig config, std::vector<std::shared_ptr<Segment>>&& segments,
+               std::uint32_t next_segment_id);
 
     void upsert(VectorId id, std::span<const float> vec, Metadata meta);
     void batch_upsert(std::vector<UpsertEntry> entries);
@@ -43,8 +48,14 @@ class Collection {
     void serialize(std::ostream& out) const;
     static Collection deserialize(std::istream& in);
 
+    void seal_active();
+    const std::vector<std::shared_ptr<Segment>>& segments() const;
+
    private:
-    HnswGraph graph_;
-    mutable std::shared_mutex meta_mutex_;
-    std::unordered_map<VectorId, Metadata> metadata_;
+    void seal_active_unsafe();
+    HnswConfig config_;
+    mutable std::shared_mutex rw_mutex_;
+    std::vector<std::shared_ptr<Segment>> segments_;
+    std::shared_ptr<Segment> active_segment_;
+    std::uint32_t next_segment_id_ = 0;
 };

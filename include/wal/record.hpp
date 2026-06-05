@@ -178,6 +178,7 @@ inline void write_config(std::ostream& out, const HnswConfig& config) {
     write_uint64(out, config.max_elements);
     write_uint32(out, static_cast<std::uint32_t>(config.quant_mode));
     write_uint32(out, config.pq_m);
+    write_uint32(out, config.segment_max_size);
 }
 
 inline HnswConfig read_config(std::istream& in) {
@@ -190,6 +191,7 @@ inline HnswConfig read_config(std::istream& in) {
     config.max_elements = read_uint64(in);
     config.quant_mode = static_cast<QuantizationMode>(read_uint32(in));
     config.pq_m = read_uint32(in);
+    config.segment_max_size = read_uint32(in);
     return config;
 }
 

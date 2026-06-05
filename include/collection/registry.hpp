@@ -12,6 +12,7 @@
 class NamespaceRegistry {
    public:
     void create(std::string_view name, HnswConfig config);
+    void register_collection(std::string_view name, Collection col);
     void drop(std::string_view name);
 
     Collection& get(std::string_view name);

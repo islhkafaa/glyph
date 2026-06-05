@@ -61,6 +61,10 @@ void StorageEngine::drop_namespace(std::string_view name) {
     wal_.append_drop_namespace(name);
     wal_.flush();
     registry_.drop(name);
+    auto ns_dir = data_dir_ / "namespaces" / std::string(name);
+    if (std::filesystem::exists(ns_dir)) {
+        std::filesystem::remove_all(ns_dir);
+    }
 }
 
 void StorageEngine::upsert(std::string_view ns, VectorId id, std::span<const float> vec,
@@ -78,18 +82,79 @@ void StorageEngine::remove(std::string_view ns, VectorId id) {
 
 void StorageEngine::checkpoint() {
     std::lock_guard<std::mutex> lock(checkpoint_mutex_);
-    auto temp_snap = snapshot_path();
-    temp_snap += ".tmp";
-    {
-        std::ofstream out(temp_snap, std::ios::out | std::ios::binary);
-        if (!out) {
-            throw std::runtime_error("Failed to open temp snapshot file: " + temp_snap.string());
+    auto ns_base_dir = data_dir_ / "namespaces";
+    std::filesystem::create_directories(ns_base_dir);
+
+    std::vector<std::string> ns_list = registry_.list();
+    for (const auto& ns : ns_list) {
+        auto& col = registry_.get(ns);
+        auto ns_dir = ns_base_dir / ns;
+        std::filesystem::create_directories(ns_dir);
+
+        std::shared_ptr<Segment> active_seg;
+        for (const auto& seg : col.segments()) {
+            if (!seg->is_immutable) {
+                active_seg = seg;
+                break;
+            }
         }
-        registry_.serialize(out);
-        out.flush();
+        if (active_seg && active_seg->graph.size() > 0) {
+            col.seal_active();
+        }
+
+        const auto& segments = col.segments();
+        for (const auto& seg : segments) {
+            if (seg->is_immutable) {
+                auto seg_path = ns_dir / ("segment_" + std::to_string(seg->id) + ".bin");
+                if (!std::filesystem::exists(seg_path)) {
+                    auto temp_seg_path = seg_path;
+                    temp_seg_path += ".tmp";
+                    {
+                        std::ofstream out(temp_seg_path, std::ios::out | std::ios::binary);
+                        if (!out) {
+                            throw std::runtime_error("Failed to open segment file: " +
+                                                     temp_seg_path.string());
+                        }
+                        seg->serialize(out);
+                        out.flush();
+                    }
+                    std::filesystem::rename(temp_seg_path, seg_path);
+                }
+            }
+        }
+
+        auto manifest_path = ns_dir / "manifest.bin";
+        auto temp_manifest_path = manifest_path;
+        temp_manifest_path += ".tmp";
+        {
+            std::ofstream out(temp_manifest_path, std::ios::out | std::ios::binary);
+            if (!out) {
+                throw std::runtime_error("Failed to open manifest file: " +
+                                         temp_manifest_path.string());
+            }
+
+            wal::write_config(out, col.config());
+
+            std::uint32_t next_seg_id = 0;
+            std::vector<std::uint32_t> imm_seg_ids;
+            for (const auto& seg : segments) {
+                next_seg_id = std::max(next_seg_id, seg->id + 1);
+                if (seg->is_immutable) {
+                    imm_seg_ids.push_back(seg->id);
+                }
+            }
+
+            wal::write_uint32(out, next_seg_id);
+            wal::write_uint32(out, static_cast<std::uint32_t>(imm_seg_ids.size()));
+            for (std::uint32_t id : imm_seg_ids) {
+                wal::write_uint32(out, id);
+            }
+            out.flush();
+        }
+        std::filesystem::rename(temp_manifest_path, manifest_path);
     }
-    std::filesystem::rename(temp_snap, snapshot_path());
-    wal_.append_checkpoint(snapshot_path().string());
+
+    wal_.append_checkpoint(ns_base_dir.string());
     wal_.flush();
 }
 
@@ -103,13 +168,42 @@ void StorageEngine::recover() {
         }
     }
     if (last_checkpoint_idx != -1) {
-        std::ifstream in(entries[last_checkpoint_idx].snapshot_path,
-                         std::ios::in | std::ios::binary);
-        if (in) {
-            registry_.deserialize(in);
-        } else {
-            throw std::runtime_error("Failed to open snapshot file during recovery: " +
-                                     entries[last_checkpoint_idx].snapshot_path);
+        auto ns_base_dir = std::filesystem::path(entries[last_checkpoint_idx].snapshot_path);
+        if (std::filesystem::exists(ns_base_dir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(ns_base_dir)) {
+                if (entry.is_directory()) {
+                    std::string ns_name = entry.path().filename().string();
+                    auto manifest_path = entry.path() / "manifest.bin";
+                    if (std::filesystem::exists(manifest_path)) {
+                        std::ifstream in(manifest_path, std::ios::in | std::ios::binary);
+                        if (!in) {
+                            throw std::runtime_error("Failed to open manifest file: " +
+                                                     manifest_path.string());
+                        }
+                        HnswConfig config = wal::read_config(in);
+                        std::uint32_t next_seg_id = wal::read_uint32(in);
+                        std::uint32_t num_segs = wal::read_uint32(in);
+
+                        std::vector<std::shared_ptr<Segment>> segments;
+                        segments.reserve(num_segs);
+                        for (std::uint32_t j = 0; j < num_segs; ++j) {
+                            std::uint32_t seg_id = wal::read_uint32(in);
+                            auto seg_path =
+                                entry.path() / ("segment_" + std::to_string(seg_id) + ".bin");
+                            std::ifstream seg_in(seg_path, std::ios::in | std::ios::binary);
+                            if (!seg_in) {
+                                throw std::runtime_error("Failed to open segment file: " +
+                                                         seg_path.string());
+                            }
+                            auto seg = Segment::deserialize(seg_in);
+                            segments.push_back(std::move(seg));
+                        }
+
+                        Collection col(config, std::move(segments), next_seg_id);
+                        registry_.register_collection(ns_name, std::move(col));
+                    }
+                }
+            }
         }
     }
     for (std::size_t i = static_cast<std::size_t>(last_checkpoint_idx + 1); i < entries.size();

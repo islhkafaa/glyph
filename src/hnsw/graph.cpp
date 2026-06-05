@@ -152,7 +152,7 @@ void HnswGraph::upsert(VectorId id, std::span<const float> vec) {
                     float dist = 0.0f;
                     if (quant_trained_) {
                         if (config_.quant_mode == QuantizationMode::SQ8) {
-                            dist = sq8_codebook_->distance(n_vec, quant_codes_[nn], kernel_);
+                            dist = sq8_codebook_->distance(n_vec, quant_codes_[nn], config_.metric);
                         } else {
                             PqLookup lookup = pq_codebook_->build_lookup(n_vec, config_.metric);
                             dist = pq_codebook_->adc_distance(lookup, quant_codes_[nn], kernel_,
@@ -235,6 +235,29 @@ std::uint64_t HnswGraph::deleted_count() const {
     return deleted_nodes_.size();
 }
 
+std::vector<HnswGraph::VectorData> HnswGraph::get_all_vectors() const {
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+    std::vector<VectorData> result;
+    result.reserve(node_to_id_.size() - deleted_nodes_.size());
+    for (std::uint32_t i = 0; i < node_to_id_.size(); ++i) {
+        if (!deleted_nodes_.contains(i)) {
+            VectorId id = node_to_id_[i];
+            std::vector<float> vec;
+            if (quant_trained_) {
+                if (config_.quant_mode == QuantizationMode::SQ8) {
+                    vec = sq8_codebook_->decode(quant_codes_[i]);
+                } else if (config_.quant_mode == QuantizationMode::PQ) {
+                    vec = pq_codebook_->decode(quant_codes_[i]);
+                }
+            } else {
+                vec = vectors_[i];
+            }
+            result.push_back({id, std::move(vec)});
+        }
+    }
+    return result;
+}
+
 void HnswGraph::compact() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     if (deleted_nodes_.empty()) {
@@ -299,7 +322,7 @@ std::uint32_t HnswGraph::search_layer(std::span<const float> query, std::uint32_
     PqLookup pq_lookup;
     if (quant_trained_) {
         if (config_.quant_mode == QuantizationMode::SQ8) {
-            curr_dist = sq8_codebook_->distance(query, quant_codes_[curr_node], kernel_);
+            curr_dist = sq8_codebook_->distance(query, quant_codes_[curr_node], config_.metric);
         } else if (config_.quant_mode == QuantizationMode::PQ) {
             pq_lookup = pq_codebook_->build_lookup(query, config_.metric);
             curr_dist =
@@ -317,7 +340,7 @@ std::uint32_t HnswGraph::search_layer(std::span<const float> query, std::uint32_
             float dist = 0.0f;
             if (quant_trained_) {
                 if (config_.quant_mode == QuantizationMode::SQ8) {
-                    dist = sq8_codebook_->distance(query, quant_codes_[neighbor], kernel_);
+                    dist = sq8_codebook_->distance(query, quant_codes_[neighbor], config_.metric);
                 } else if (config_.quant_mode == QuantizationMode::PQ) {
                     dist = pq_codebook_->adc_distance(pq_lookup, quant_codes_[neighbor], kernel_,
                                                       query);
@@ -364,7 +387,7 @@ std::vector<std::pair<float, std::uint32_t>> HnswGraph::search_layer_ef(
         float dist = 0.0f;
         if (quant_trained_) {
             if (config_.quant_mode == QuantizationMode::SQ8) {
-                dist = sq8_codebook_->distance(query, quant_codes_[enter_node], kernel_);
+                dist = sq8_codebook_->distance(query, quant_codes_[enter_node], config_.metric);
             } else if (config_.quant_mode == QuantizationMode::PQ) {
                 dist =
                     pq_codebook_->adc_distance(pq_lookup, quant_codes_[enter_node], kernel_, query);
@@ -398,7 +421,8 @@ std::vector<std::pair<float, std::uint32_t>> HnswGraph::search_layer_ef(
                 float dist = 0.0f;
                 if (quant_trained_) {
                     if (config_.quant_mode == QuantizationMode::SQ8) {
-                        dist = sq8_codebook_->distance(query, quant_codes_[neighbor], kernel_);
+                        dist =
+                            sq8_codebook_->distance(query, quant_codes_[neighbor], config_.metric);
                     } else if (config_.quant_mode == QuantizationMode::PQ) {
                         dist = pq_codebook_->adc_distance(pq_lookup, quant_codes_[neighbor],
                                                           kernel_, query);
