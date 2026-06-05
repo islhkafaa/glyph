@@ -25,6 +25,7 @@ class CommandHandler {
     void batch_upsert(std::string_view ns, std::vector<UpsertEntry> entries);
     void remove(std::string_view ns, VectorId id);
     void train(std::string_view ns);
+    void compact(std::string_view ns);
     std::vector<Collection::SearchResult> search(std::string_view ns, std::span<const float> query,
                                                  std::uint32_t k, std::uint32_t ef,
                                                  const Filter& filter);

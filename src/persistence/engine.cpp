@@ -17,6 +17,26 @@ StorageEngine::StorageEngine(std::filesystem::path data_dir)
                 break;
             }
             checkpoint();
+            bool compacted_any = false;
+            std::vector<std::string> ns_list = registry_.list();
+            for (const auto& ns : ns_list) {
+                try {
+                    auto& col = registry_.get(ns);
+                    std::uint64_t deleted = col.deleted_count();
+                    std::uint64_t active = col.size();
+                    if (deleted >= 1000) {
+                        double ratio = static_cast<double>(deleted) / (active + deleted);
+                        if (ratio >= 0.10) {
+                            col.compact();
+                            compacted_any = true;
+                        }
+                    }
+                } catch (...) {
+                }
+            }
+            if (compacted_any) {
+                checkpoint();
+            }
         }
     });
 }

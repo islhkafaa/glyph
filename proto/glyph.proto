@@ -59,6 +59,10 @@ message TrainRequest {
   string namespace = 1;
 }
 
+message CompactRequest {
+  string namespace = 1;
+}
+
 message EqFilterProto {
   string key = 1;
   Value value = 2;
@@ -70,10 +74,39 @@ message RangeFilterProto {
   double high = 3;
 }
 
+message AndFilterProto {
+  repeated Filter conditions = 1;
+}
+
+message OrFilterProto {
+  repeated Filter conditions = 1;
+}
+
+message NotFilterProto {
+  Filter condition = 1;
+}
+
+message CompareFilterProto {
+  string key = 1;
+  string op = 2;
+  Value value = 3;
+}
+
+message InFilterProto {
+  string key = 1;
+  repeated Value values = 2;
+  bool is_not = 3;
+}
+
 message Filter {
   oneof filter_type {
     EqFilterProto eq = 1;
     RangeFilterProto range = 2;
+    AndFilterProto and = 3;
+    OrFilterProto or = 4;
+    NotFilterProto not = 5;
+    CompareFilterProto compare = 6;
+    InFilterProto in = 7;
   }
 }
 
@@ -129,6 +162,7 @@ service GlyphService {
   rpc BatchUpsert (BatchUpsertRequest) returns (Empty);
   rpc Delete (DeleteRequest) returns (Empty);
   rpc Train (TrainRequest) returns (Empty);
+  rpc Compact (CompactRequest) returns (Empty);
   rpc Search (SearchRequest) returns (SearchResponse);
   rpc ListNamespaces (Empty) returns (ListNamespacesResponse);
   rpc GetNamespace (GetNamespaceRequest) returns (NamespaceInfoProto);

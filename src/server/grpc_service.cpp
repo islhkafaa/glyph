@@ -92,6 +92,48 @@ Filter proto_to_filter(const glyph::Filter& proto_filter) {
             const auto& range = proto_filter.range();
             return RangeFilter{range.key(), range.low(), range.high()};
         }
+        case glyph::Filter::kAnd: {
+            const auto& and_proto = proto_filter.and_();
+            std::vector<Filter> conds;
+            conds.reserve(and_proto.conditions_size());
+            for (int i = 0; i < and_proto.conditions_size(); ++i) {
+                conds.push_back(proto_to_filter(and_proto.conditions(i)));
+            }
+            return AndFilter{std::move(conds)};
+        }
+        case glyph::Filter::kOr: {
+            const auto& or_proto = proto_filter.or_();
+            std::vector<Filter> conds;
+            conds.reserve(or_proto.conditions_size());
+            for (int i = 0; i < or_proto.conditions_size(); ++i) {
+                conds.push_back(proto_to_filter(or_proto.conditions(i)));
+            }
+            return OrFilter{std::move(conds)};
+        }
+        case glyph::Filter::kNot: {
+            const auto& not_proto = proto_filter.not_();
+            return NotFilter{std::make_shared<Filter>(proto_to_filter(not_proto.condition()))};
+        }
+        case glyph::Filter::kCompare: {
+            const auto& comp = proto_filter.compare();
+            CompareOp op = CompareOp::Lt;
+            if (comp.op() == "gt")
+                op = CompareOp::Gt;
+            else if (comp.op() == "lte")
+                op = CompareOp::Lte;
+            else if (comp.op() == "gte")
+                op = CompareOp::Gte;
+            return CompareFilter{comp.key(), op, proto_to_value(comp.value())};
+        }
+        case glyph::Filter::kIn: {
+            const auto& in_proto = proto_filter.in();
+            std::vector<MetadataValue> vals;
+            vals.reserve(in_proto.values_size());
+            for (int i = 0; i < in_proto.values_size(); ++i) {
+                vals.push_back(proto_to_value(in_proto.values(i)));
+            }
+            return InFilter{in_proto.key(), std::move(vals), in_proto.is_not()};
+        }
         default:
             return std::monostate{};
     }
@@ -249,6 +291,29 @@ grpc::Status GlyphServiceImpl::Train(grpc::ServerContext* context,
     (void)response;
     try {
         handler_.train(request->namespace_());
+        return grpc::Status::OK;
+    } catch (const std::out_of_range& e) {
+        Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, e.what());
+    } catch (const std::invalid_argument& e) {
+        Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, e.what());
+    } catch (const std::exception& e) {
+        Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);
+        return grpc::Status(grpc::StatusCode::INTERNAL, e.what());
+    } catch (...) {
+        Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);
+        return grpc::Status(grpc::StatusCode::INTERNAL, "Unknown error");
+    }
+}
+
+grpc::Status GlyphServiceImpl::Compact(grpc::ServerContext* context,
+                                       const glyph::CompactRequest* request,
+                                       glyph::Empty* response) {
+    (void)context;
+    (void)response;
+    try {
+        handler_.compact(request->namespace_());
         return grpc::Status::OK;
     } catch (const std::out_of_range& e) {
         Metrics::instance().errors.fetch_add(1, std::memory_order_relaxed);

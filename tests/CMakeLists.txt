@@ -33,8 +33,10 @@ add_executable(glyph_tests
     quantization/test_pq.cpp
     collection/test_collection.cpp
     collection/test_registry.cpp
+    collection/test_advanced_filters.cpp
     wal/test_wal.cpp
     persistence/test_engine.cpp
+    persistence/test_compaction.cpp
     server/test_grpc.cpp
     server/test_http.cpp
     server/test_metrics.cpp

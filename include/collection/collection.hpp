@@ -31,6 +31,8 @@ class Collection {
     void batch_upsert(std::vector<UpsertEntry> entries);
     void remove(VectorId id);
     void train();
+    void compact();
+    std::uint64_t deleted_count() const;
 
     std::vector<SearchResult> search(std::span<const float> query, std::uint32_t k,
                                      std::uint32_t ef, const Filter& filter = {}) const;

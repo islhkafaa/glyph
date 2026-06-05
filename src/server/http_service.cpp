@@ -5,6 +5,7 @@
 
 #include "server/logger.hpp"
 #include "server/metrics.hpp"
+#include "server/web_assets.hpp"
 
 using json = nlohmann::json;
 
@@ -60,6 +61,40 @@ Filter json_to_filter(const json& j) {
         return EqFilter{j.at("key"), json_to_value(j.at("value"))};
     } else if (type == "range") {
         return RangeFilter{j.at("key"), j.at("low").get<double>(), j.at("high").get<double>()};
+    } else if (type == "and") {
+        std::vector<Filter> conds;
+        for (const auto& c : j.at("conditions")) {
+            conds.push_back(json_to_filter(c));
+        }
+        return AndFilter{std::move(conds)};
+    } else if (type == "or") {
+        std::vector<Filter> conds;
+        for (const auto& c : j.at("conditions")) {
+            conds.push_back(json_to_filter(c));
+        }
+        return OrFilter{std::move(conds)};
+    } else if (type == "not") {
+        return NotFilter{std::make_shared<Filter>(json_to_filter(j.at("condition")))};
+    } else if (type == "compare") {
+        std::string op_str = j.at("op");
+        CompareOp op = CompareOp::Lt;
+        if (op_str == "gt")
+            op = CompareOp::Gt;
+        else if (op_str == "lte")
+            op = CompareOp::Lte;
+        else if (op_str == "gte")
+            op = CompareOp::Gte;
+        return CompareFilter{j.at("key"), op, json_to_value(j.at("value"))};
+    } else if (type == "in" || type == "notin") {
+        std::vector<MetadataValue> vals;
+        for (const auto& val_json : j.at("values")) {
+            vals.push_back(json_to_value(val_json));
+        }
+        bool is_not = (type == "notin");
+        if (j.contains("not")) {
+            is_not = j["not"].get<bool>();
+        }
+        return InFilter{j.at("key"), std::move(vals), is_not};
     }
     throw std::invalid_argument("Unknown filter type: " + type);
 }
@@ -95,6 +130,10 @@ void HttpService::stop() {
 }
 
 void HttpService::setup_routes() {
+    svr_.Get("/", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(INDEX_HTML, "text/html");
+    });
+
     svr_.Get("/health", [this](const httplib::Request& req, httplib::Response& res) {
         (void)req;
         try {
@@ -317,6 +356,22 @@ void HttpService::setup_routes() {
                   try {
                       std::string ns = req.matches[1];
                       handler_.train(ns);
+                      res.status = 200;
+                      res.set_content("{}", "application/json");
+                  } catch (const std::out_of_range& e) {
+                      send_error(res, 404, e.what());
+                  } catch (const std::invalid_argument& e) {
+                      send_error(res, 400, e.what());
+                  } catch (const std::exception& e) {
+                      send_error(res, 500, e.what());
+                  }
+              });
+
+    svr_.Post(R"(/namespaces/([^/]+)/compact)",
+              [this](const httplib::Request& req, httplib::Response& res) {
+                  try {
+                      std::string ns = req.matches[1];
+                      handler_.compact(ns);
                       res.status = 200;
                       res.set_content("{}", "application/json");
                   } catch (const std::out_of_range& e) {

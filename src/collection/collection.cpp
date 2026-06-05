@@ -36,6 +36,10 @@ void Collection::remove(VectorId id) {
 
 void Collection::train() { graph_.train_quantization(); }
 
+void Collection::compact() { graph_.compact(); }
+
+std::uint64_t Collection::deleted_count() const { return graph_.deleted_count(); }
+
 std::vector<Collection::SearchResult> Collection::search(std::span<const float> query,
                                                          std::uint32_t k, std::uint32_t ef,
                                                          const Filter& filter) const {

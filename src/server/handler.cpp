@@ -40,6 +40,12 @@ void CommandHandler::train(std::string_view ns) {
     engine_.registry().get(ns).train();
 }
 
+void CommandHandler::compact(std::string_view ns) {
+    Metrics::instance().total_requests.fetch_add(1, std::memory_order_relaxed);
+    engine_.registry().get(ns).compact();
+    engine_.checkpoint();
+}
+
 std::vector<Collection::SearchResult> CommandHandler::search(std::string_view ns,
                                                              std::span<const float> query,
                                                              std::uint32_t k, std::uint32_t ef,

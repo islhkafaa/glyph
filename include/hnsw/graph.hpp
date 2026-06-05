@@ -38,6 +38,9 @@ class HnswGraph {
     void train_quantization();
     bool quant_trained() const { return quant_trained_; }
 
+    void compact();
+    std::uint64_t deleted_count() const;
+
     void serialize(std::ostream& out) const;
     static HnswGraph deserialize(std::istream& in);
 

@@ -230,6 +230,56 @@ std::uint64_t HnswGraph::size() const {
     return id_to_node_.size();
 }
 
+std::uint64_t HnswGraph::deleted_count() const {
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+    return deleted_nodes_.size();
+}
+
+void HnswGraph::compact() {
+    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    if (deleted_nodes_.empty()) {
+        return;
+    }
+
+    HnswGraph temp(config_);
+    if (quant_trained_) {
+        temp.quant_trained_ = true;
+        temp.sq8_codebook_ = sq8_codebook_;
+        temp.pq_codebook_ = pq_codebook_;
+    }
+
+    for (std::uint32_t i = 0; i < node_to_id_.size(); ++i) {
+        if (!deleted_nodes_.contains(i)) {
+            VectorId id = node_to_id_[i];
+            if (quant_trained_) {
+                std::vector<float> vec;
+                if (config_.quant_mode == QuantizationMode::SQ8) {
+                    vec = sq8_codebook_->decode(quant_codes_[i]);
+                } else if (config_.quant_mode == QuantizationMode::PQ) {
+                    vec = pq_codebook_->decode(quant_codes_[i]);
+                }
+                temp.upsert(id, vec);
+            } else {
+                temp.upsert(id, vectors_[i]);
+            }
+        }
+    }
+
+    std::swap(id_to_node_, temp.id_to_node_);
+    std::swap(node_to_id_, temp.node_to_id_);
+    std::swap(vectors_, temp.vectors_);
+    std::swap(quant_codes_, temp.quant_codes_);
+    std::swap(quant_trained_, temp.quant_trained_);
+    std::swap(sq8_codebook_, temp.sq8_codebook_);
+    std::swap(pq_codebook_, temp.pq_codebook_);
+    std::swap(node_level_, temp.node_level_);
+    std::swap(layers_, temp.layers_);
+    std::swap(deleted_nodes_, temp.deleted_nodes_);
+    std::swap(entry_point_, temp.entry_point_);
+    std::swap(max_level_, temp.max_level_);
+    std::swap(rng_, temp.rng_);
+}
+
 const HnswConfig& HnswGraph::config() const { return config_; }
 
 int HnswGraph::generate_random_level() {

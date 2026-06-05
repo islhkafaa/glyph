@@ -31,6 +31,9 @@ class GlyphServiceImpl final : public glyph::GlyphService::Service {
     grpc::Status Train(grpc::ServerContext* context, const glyph::TrainRequest* request,
                        glyph::Empty* response) override;
 
+    grpc::Status Compact(grpc::ServerContext* context, const glyph::CompactRequest* request,
+                         glyph::Empty* response) override;
+
     grpc::Status Search(grpc::ServerContext* context, const glyph::SearchRequest* request,
                         glyph::SearchResponse* response) override;
 
